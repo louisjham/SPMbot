@@ -1,0 +1,25 @@
+# Kali Agent Configuration Settings
+
+# LLM Configuration
+llm:
+  base_url: "https://api.openai.com/v1"
+  api_key: "${ZAI_API_KEY}"
+  model: "gpt-4"
+
+# Telegram Bot Configuration
+telegram:
+  token: "${TELEGRAM_BOT_TOKEN}"
+  allowed_users:
+    # List of Telegram user IDs allowed to interact with the bot
+    # Example: 123456789
+    - []
+
+# Agent Configuration
+agent:
+  max_iterations: 10
+  default_timeout: 300  # seconds
+  confirm_dangerous: true  # Require confirmation for dangerous operations
+
+# Data Store Configuration
+store:
+  sqlite_path: "./data/kali_agent.db"

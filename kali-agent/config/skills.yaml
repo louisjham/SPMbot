@@ -1,0 +1,16 @@
+# Kali Agent Skills Configuration
+
+# Skills registry configuration
+# Each skill has a name, description, and optional parameters
+
+skills:
+  # Example skill configuration
+  # shell_exec:
+  #   enabled: true
+  #   timeout: 60
+  #   dangerous: false
+
+defaults:
+  enabled: true
+  timeout: 60
+  dangerous: false

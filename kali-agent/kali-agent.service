@@ -1,0 +1,15 @@
+[Unit]
+Description=Kali Agent - AI-powered security assistant
+After=network.target
+
+[Service]
+Type=simple
+User=kali
+WorkingDirectory=/opt/kali-agent
+ExecStart=/usr/bin/python3 /opt/kali-agent/daemon.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

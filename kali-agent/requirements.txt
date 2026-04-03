@@ -1,0 +1,6 @@
+aiogram>=3.4
+openai>=1.30
+aiosqlite
+pyyaml
+pydantic
+python-dotenv
