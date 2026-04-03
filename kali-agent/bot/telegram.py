@@ -6,12 +6,15 @@ bot interactions, commands, and message routing.
 """
 
 import asyncio
+import html
+import logging
 import uuid
 from typing import TYPE_CHECKING
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
+from aiogram.types import BotCommand
 
 from ..agent.loop import AgentLoop
 from ..skills.registry import SkillRegistry
@@ -105,7 +108,7 @@ class TelegramInterface:
             if not commands:
                 await message.reply("No skills available.", parse_mode=ParseMode.HTML)
                 return
-            skills_list = "\n".join(f"• <code>{cmd}</code>" for cmd in commands)
+            skills_list = "\n".join(f"• <code>{html.escape(cmd)}</code>" for cmd in commands)
             await message.reply(
                 f"<b>Available Skills:</b>\n{skills_list}",
                 parse_mode=ParseMode.HTML,
@@ -121,10 +124,10 @@ class TelegramInterface:
                 return
             status_lines = []
             for task_id, task in self.agent_loop.active_tasks.items():
-                goal_truncated = task.config.goal[:80]
+                goal_truncated = html.escape(task.config.goal[:80])
                 status_lines.append(
-                    f"<b>Task:</b> <code>{task_id}</code>\n"
-                    f"<b>State:</b> {task.state.value}\n"
+                    f"<b>Task:</b> <code>{html.escape(task_id)}</code>\n"
+                    f"<b>State:</b> {html.escape(task.state.value)}\n"
                     f"<b>Iteration:</b> {task.current_iteration}\n"
                     f"<b>Goal:</b> {goal_truncated}"
                 )
@@ -180,7 +183,7 @@ class TelegramInterface:
             # Stop the task
             self.agent_loop.stop_task(task_id)
             await message.reply(
-                f"⏹️ Task {task_id} stopped",
+                f"⏹️ Task {html.escape(task_id)} stopped",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -199,6 +202,60 @@ class TelegramInterface:
                 return
             self._resolve_confirm(False)
             await message.reply("❌ Denied", parse_mode=ParseMode.HTML)
+
+        # Register dynamic skill commands
+        self._register_skill_commands()
+
+    def _register_skill_commands(self) -> None:
+        """
+        Register handlers for all skill slash commands.
+        
+        Iterates through the skill registry's slash command map and creates
+        a dedicated handler for each skill command. Uses a separate method
+        to avoid closure variable capture bugs.
+        """
+        for cmd_str, skill_name in self.skills._slash_map.items():
+            cmd_clean = cmd_str.lstrip("/")
+            skill = self.skills.get(skill_name)
+            if not skill:
+                continue
+
+            self._make_skill_handler(cmd_clean, skill)
+
+    def _make_skill_handler(self, cmd_clean: str, skill) -> None:
+        """
+        Create and register a command handler for a skill.
+        
+        This method exists separately to avoid closure variable capture bugs.
+        When the handler is called later, 'skill' is bound as a parameter,
+        not captured from a loop variable.
+        
+        Args:
+            cmd_clean: The command name without leading slash.
+            skill: The skill instance to execute.
+        """
+        @self.dp.message(Command(cmd_clean))
+        async def handler(message: types.Message) -> None:
+            """Handle a skill slash command."""
+            if not self._auth(message.from_user.id):
+                return
+            parts = message.text.split(maxsplit=1) if message.text else []
+            args_text = parts[1] if len(parts) > 1 else ""
+            task_id = str(uuid.uuid4())[:8]
+            self.task_chat_map[task_id] = message.chat.id
+            goal = (
+                f"Use the {skill.name} skill with these parameters/target: {args_text}. "
+                f"Analyze the results thoroughly and report findings."
+            )
+            task = AgentTask(
+                task_id=task_id,
+                config=TaskConfig(goal=goal, max_iterations=10),
+            )
+            await message.reply(
+                f"🔧 Running <code>{html.escape(skill.name)}</code> — task <code>{html.escape(task_id)}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            asyncio.create_task(self.agent_loop.run(task))
 
     def _resolve_confirm(self, value: bool) -> None:
         """
@@ -244,10 +301,81 @@ class TelegramInterface:
         finally:
             self.pending_confirms.pop(task_id, None)
 
+    async def send_status(self, task_id: str, text: str) -> None:
+        """
+        Send a status update message to the chat associated with a task.
+        
+        Splits long messages into chunks at newline boundaries (max 4000 chars each)
+        and sends them as HTML-formatted messages. Escapes bare HTML entities
+        in text that doesn't contain intentional HTML tags.
+        
+        Args:
+            task_id: The ID of the task to send status for.
+            text: The status text to send.
+        """
+        chat_id = self.task_chat_map.get(task_id)
+        if not chat_id:
+            return
+        
+        # Split text into chunks at newline boundaries, max 4000 chars each
+        chunks = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= 4000:
+                chunks.append(remaining)
+                break
+            
+            # Find a newline boundary within the last 500 chars before 4000
+            split_point = 4000
+            newline_search_start = max(3500, 0)
+            newline_pos = remaining.rfind('\n', newline_search_start, 4000)
+            if newline_pos > newline_search_start:
+                split_point = newline_pos + 1  # Include the newline in this chunk
+            
+            chunks.append(remaining[:split_point])
+            remaining = remaining[split_point:]
+        
+        # Send each chunk
+        for chunk in chunks:
+            # Escape bare HTML if the chunk doesn't contain intentional tags
+            if '<b>' not in chunk and '<pre>' not in chunk:
+                chunk = html.escape(chunk)
+            
+            try:
+                await self.bot.send_message(chat_id, chunk, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logging.error(f"Failed to send status message: {e}")
+
+    async def setup_bot_commands(self) -> None:
+        """
+        Set up bot commands for the Telegram menu.
+        
+        Registers core commands (task, skills, stop, status, confirm, deny)
+        and all skill slash commands from the skill registry.
+        """
+        commands = [
+            BotCommand(command="task", description="Start a new agent task"),
+            BotCommand(command="skills", description="List available skills"),
+            BotCommand(command="stop", description="Stop an active task"),
+            BotCommand(command="status", description="Show active tasks"),
+            BotCommand(command="confirm", description="Confirm a pending action"),
+            BotCommand(command="deny", description="Deny a pending action"),
+        ]
+        
+        # Add skill slash commands
+        for cmd in self.skills.all_slash_commands():
+            # Remove leading slash if present
+            cmd_name = cmd.lstrip('/')
+            commands.append(BotCommand(command=cmd_name, description=f"Skill: {cmd_name}"))
+        
+        await self.bot.set_my_commands(commands)
+
     async def start(self) -> None:
         """
         Start the Telegram bot polling loop.
         
-        Begins long polling to receive updates from Telegram servers.
+        Sets up bot commands and begins long polling to receive updates
+        from Telegram servers.
         """
+        await self.setup_bot_commands()
         await self.dp.start_polling(self.bot)

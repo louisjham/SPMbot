@@ -1,16 +1,127 @@
 # Kali Agent Skills Configuration
-
+#
 # Skills registry configuration
 # Each skill has a name, description, and optional parameters
-
-skills:
-  # Example skill configuration
-  # shell_exec:
-  #   enabled: true
-  #   timeout: 60
-  #   dangerous: false
 
 defaults:
   enabled: true
   timeout: 60
   dangerous: false
+
+quick_skills:
+  # Nikto Web Vulnerability Scanner
+  nikto_scan:
+    name: nikto_scan
+    description: Scan web servers for vulnerabilities using Nikto
+    slash_command: /nikto
+    command_template: nikto -h {target} -o /tmp/nikto_last.txt {tuning:-Tuning}
+    dangerous: true
+    timeout: 600
+    parameters:
+      - name: target
+        type: string
+        description: Target URL or hostname to scan
+        required: true
+      - name: tuning
+        type: string
+        description: Scan tuning options (e.g., 123bde)
+        required: false
+
+  # WhatWeb Web Technology Fingerprinter
+  whatweb_scan:
+    name: whatweb_scan
+    description: Fingerprint web technologies using WhatWeb
+    slash_command: /whatweb
+    command_template: whatweb {target} --log-json=/tmp/whatweb_last.json {aggression:--aggression}
+    dangerous: false
+    timeout: 300
+    parameters:
+      - name: target
+        type: string
+        description: Target URL to fingerprint
+        required: true
+      - name: aggression
+        type: integer
+        description: Aggression level (1=stealthy, 2=normal, 3=aggressive, 4=heavy)
+        required: false
+        enum: [1, 2, 3, 4]
+
+  # FFUF Web Fuzzer
+  ffuf_fuzz:
+    name: ffuf_fuzz
+    description: Fuzz web paths and parameters using FFUF
+    slash_command: /fuzz
+    command_template: ffuf -u {url} -w {wordlist:/usr/share/seclists/Discovery/Web-Content/common.txt} -mc {match_codes:200,301,302,403} -o /tmp/ffuf_last.json -of json
+    dangerous: true
+    timeout: 600
+    parameters:
+      - name: url
+        type: string
+        description: Target URL (must contain FUZZ keyword for fuzzing position)
+        required: true
+      - name: wordlist
+        type: string
+        description: Path to wordlist file
+        required: false
+      - name: match_codes
+        type: string
+        description: Comma-separated HTTP status codes to match
+        required: false
+
+  # SQLMap SQL Injection Scanner
+  sqlmap_scan:
+    name: sqlmap_scan
+    description: Detect and exploit SQL injection vulnerabilities using SQLMap
+    slash_command: /sqlmap
+    command_template: sqlmap -u {url} --batch --output-dir=/tmp/sqlmap_out {extra_flags}
+    dangerous: true
+    timeout: 900
+    parameters:
+      - name: url
+        type: string
+        description: Target URL to test for SQL injection
+        required: true
+      - name: extra_flags
+        type: string
+        description: Additional SQLMap flags and options
+        required: false
+
+  # Subfinder Subdomain Enumerator
+  subfinder_enum:
+    name: subfinder_enum
+    description: Enumerate subdomains using Subfinder
+    slash_command: /subs
+    command_template: subfinder -d {domain} -o /tmp/subfinder_last.txt {recursive:-recursive}
+    dangerous: false
+    timeout: 300
+    parameters:
+      - name: domain
+        type: string
+        description: Domain to enumerate subdomains for
+        required: true
+      - name: recursive
+        type: boolean
+        description: Enable recursive subdomain enumeration
+        required: false
+
+  # Feroxbuster Directory Scanner
+  feroxbuster_scan:
+    name: feroxbuster_scan
+    description: Fast directory and file enumeration using Feroxbuster
+    slash_command: /ferox
+    command_template: feroxbuster -u {url} -w {wordlist:/usr/share/seclists/Discovery/Web-Content/common.txt} -o /tmp/ferox_last.txt -t {threads:50}
+    dangerous: true
+    timeout: 600
+    parameters:
+      - name: url
+        type: string
+        description: Target URL to scan
+        required: true
+      - name: wordlist
+        type: string
+        description: Path to wordlist file
+        required: false
+      - name: threads
+        type: integer
+        description: Number of concurrent threads
+        required: false

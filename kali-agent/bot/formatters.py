@@ -5,9 +5,14 @@ This module provides utilities for formatting messages for Telegram,
 including MarkdownV2/HTML escaping, code blocks, and message truncation.
 """
 
+import json
 import re
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from ..skills.base import SkillResult
+    from ..tasks.models import AgentTask
 
 
 # HTML special characters that need escaping
@@ -352,3 +357,165 @@ def format_confirmation_request(
     ])
     
     return "\n".join(lines)
+
+
+def format_tool_call(skill_name: str, args: dict) -> str:
+    """
+    Format a tool/skill call for display.
+    
+    Args:
+        skill_name: Name of the skill being called.
+        args: Arguments passed to the skill.
+    
+    Returns:
+        Formatted tool call string with emoji and JSON args.
+    
+    Example:
+        >>> format_tool_call("nmap_scan", {"target": "example.com"})
+        "🔧 <b>Running: nmap_scan</b>\\n<pre>{\\"target\\": \\"example.com\\"}</pre>"
+    """
+    args_json = json.dumps(args, indent=2, default=str)
+    return (
+        f"🔧 <b>Running: {escape_html(skill_name)}</b>\n"
+        f"<pre>{escape_html(args_json)}</pre>"
+    )
+
+
+def format_tool_result(skill_name: str, result: "SkillResult") -> str:
+    """
+    Format a skill execution result for display.
+    
+    Args:
+        skill_name: Name of the executed skill.
+        result: SkillResult object containing output and metadata.
+    
+    Returns:
+        Formatted result string with status, output, artifacts, and hints.
+    """
+    status_emoji = "✅" if result.success else "❌"
+    
+    # Truncate output to 3000 chars
+    output = result.output
+    truncated = False
+    if len(output) > 3000:
+        output = output[:3000]
+        truncated = True
+    
+    lines = [
+        f"{status_emoji} <b>{escape_html(skill_name)}</b>",
+        f"<pre>{escape_html(output)}{'... [truncated]' if truncated else ''}</pre>",
+    ]
+    
+    # Add artifacts if present
+    if result.artifacts:
+        artifact_list = "\n".join(f"  • {escape_html(a)}" for a in result.artifacts)
+        lines.append(f"📎 <b>Artifacts:</b>\n{artifact_list}")
+    
+    # Add follow-up hint if present
+    if result.follow_up_hint:
+        lines.append(f"💡 <i>{escape_html(result.follow_up_hint)}</i>")
+    
+    return "\n".join(lines)
+
+
+def format_task_status(task: "AgentTask") -> str:
+    """
+    Format an agent task status card for display.
+    
+    Args:
+        task: AgentTask object to format.
+    
+    Returns:
+        Formatted status card with task details.
+    """
+    goal_truncated = task.config.goal[:100]
+    if len(task.config.goal) > 100:
+        goal_truncated += "..."
+    
+    # Format state with emoji
+    state_emoji = {
+        "pending": "⏳",
+        "running": "🔄",
+        "waiting_confirmation": "⏸️",
+        "paused": "⏸️",
+        "completed": "✅",
+        "failed": "❌",
+        "stopped": "⏹️",
+    }.get(task.state.value, "❓")
+    
+    return (
+        f"📋 <b>Task: <code>{escape_html(task.task_id)}</code></b>\n"
+        f"{state_emoji} State: <b>{escape_html(task.state.value)}</b>\n"
+        f"🔢 Iteration: {task.current_iteration}/{task.config.max_iterations}\n"
+        f"🎯 Goal: {escape_html(goal_truncated)}\n"
+        f"🕐 Created: {task.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+
+def format_skill_confirmation_request(skill_name: str, args: dict) -> str:
+    """
+    Format a confirmation request for skill execution.
+    
+    Args:
+        skill_name: Name of the skill to be executed.
+        args: Arguments that will be passed to the skill.
+    
+    Returns:
+        Formatted confirmation request with instructions.
+    """
+    args_json = json.dumps(args, indent=2, default=str)
+    return (
+        f"⚠️ <b>Confirmation Required</b>\n\n"
+        f"Skill: <b>{escape_html(skill_name)}</b>\n"
+        f"<pre>{escape_html(args_json)}</pre>\n\n"
+        f"Reply with <code>/confirm</code> to proceed or <code>/deny</code> to cancel."
+    )
+
+
+def split_message(text: str, max_length: int = 4000) -> list[str]:
+    """
+    Split text into chunks at newline boundaries respecting max_length.
+    
+    Tries to break at paragraph boundaries first, then newlines,
+    then spaces, to keep related content together.
+    
+    Args:
+        text: The text to split.
+        max_length: Maximum length per chunk (default 4000).
+    
+    Returns:
+        List of text chunks, each within max_length.
+    """
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks: list[str] = []
+    remaining = text
+    
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+        
+        # Find best break point
+        break_point = max_length
+        
+        # Try paragraph break first
+        para_break = remaining.rfind("\n\n", 0, max_length)
+        if para_break > max_length // 2:
+            break_point = para_break + 2
+        else:
+            # Try newline break
+            newline_break = remaining.rfind("\n", 0, max_length)
+            if newline_break > max_length // 2:
+                break_point = newline_break + 1
+            else:
+                # Try space break
+                space_break = remaining.rfind(" ", 0, max_length)
+                if space_break > max_length // 2:
+                    break_point = space_break + 1
+        
+        chunks.append(remaining[:break_point])
+        remaining = remaining[break_point:]
+    
+    return chunks
