@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncGenerator, Callable, Optional
 
-from .models import (
+from tasks.models import (
     Task,
     TaskCreate,
     TaskFilter,

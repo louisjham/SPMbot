@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from .base import Skill, SkillResult, ToolParameter
+from skills.base import Skill, SkillResult, ToolParameter
 
 logger = logging.getLogger(__name__)
 

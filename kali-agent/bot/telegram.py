@@ -16,9 +16,9 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand
 
-from ..agent.loop import AgentLoop
-from ..skills.registry import SkillRegistry
-from ..tasks.models import AgentTask, TaskConfig
+from agent.loop import AgentLoop
+from skills.registry import SkillRegistry
+from tasks.models import AgentTask, TaskConfig
 
 if TYPE_CHECKING:
     pass

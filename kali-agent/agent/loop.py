@@ -10,11 +10,11 @@ import json
 import logging
 from typing import Any, Callable, Optional
 
-from .conditions import check_stop_conditions
-from .context import ContextManager
-from .llm import LLMClient
-from ..skills.registry import SkillRegistry
-from ..tasks.models import AgentTask, TaskState
+from agent.conditions import check_stop_conditions
+from agent.context import ContextManager
+from agent.llm import LLMClient
+from skills.registry import SkillRegistry
+from tasks.models import AgentTask, TaskState
 
 logger = logging.getLogger(__name__)
 

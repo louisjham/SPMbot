@@ -18,7 +18,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from agent.loop import AgentLoop, LoopState
 from agent.context import ContextManager
-from .formatters import (
+from bot.formatters import (
     format_code_block,
     format_error,
     format_history_entry,

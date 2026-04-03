@@ -1,0 +1,6 @@
+agent
+bot
+config
+skills
+store
+tasks

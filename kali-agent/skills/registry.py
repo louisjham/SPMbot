@@ -12,7 +12,7 @@ import pkgutil
 from pathlib import Path
 from typing import Any, Optional
 
-from .base import Skill
+from skills.base import Skill
 
 logger = logging.getLogger(__name__)
 
