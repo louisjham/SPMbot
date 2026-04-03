@@ -229,3 +229,85 @@ class CompositeCondition(LoopCondition):
         """Reset all conditions."""
         for condition in self.conditions:
             condition.reset()
+
+
+async def check_stop_conditions(
+    conditions: list[str],
+    messages: list[dict],
+) -> tuple[bool, str]:
+    """
+    Check if any stop conditions are met based on recent message content.
+
+    Concatenates the content of the last 10 messages and checks each condition
+    in order. Returns on the first matching condition.
+
+    Args:
+        conditions: List of condition strings in supported formats:
+            - "regex:<pattern>" — regex search with IGNORECASE
+            - "found:<keyword>" — case-insensitive substring match
+            - "any_critical_vuln" — checks for critical vulnerability indicators
+            - "port_found:<number>" — looks for port/tcp or port/udp pattern
+            - "max_time:<seconds>" — always returns False (handled externally)
+        messages: List of message dicts with "content" field.
+
+    Returns:
+        tuple[bool, str]: (True, reason_string) on first match,
+            (False, "") if no conditions match.
+    """
+    import re
+
+    # Concatenate last 10 messages' content, handling None
+    recent_messages = messages[-10:] if messages else []
+    recent_text = " ".join(
+        msg.get("content", "") or ""
+        for msg in recent_messages
+    )
+
+    for condition in conditions:
+        # regex:<pattern> — re.search with IGNORECASE
+        if condition.startswith("regex:"):
+            pattern = condition[6:]  # Remove "regex:" prefix
+            if re.search(pattern, recent_text, re.IGNORECASE):
+                return (True, f"Regex matched: {pattern}")
+            continue
+
+        # found:<keyword> — case-insensitive substring match
+        if condition.startswith("found:"):
+            keyword = condition[6:]  # Remove "found:" prefix
+            if keyword.lower() in recent_text.lower():
+                return (True, f"Found keyword: {keyword}")
+            continue
+
+        # any_critical_vuln — checks for critical vulnerability indicators
+        if condition == "any_critical_vuln":
+            vuln_indicators = [
+                "CRITICAL",
+                "CVE-",
+                "RCE",
+                "remote code execution",
+                "SQL injection confirmed",
+                "shell obtained",
+                "root access",
+                "admin access",
+            ]
+            for indicator in vuln_indicators:
+                if indicator.lower() in recent_text.lower():
+                    return (True, f"Critical vulnerability indicator found: {indicator}")
+            continue
+
+        # port_found:<number> — looks for port number followed by /tcp or /udp
+        if condition.startswith("port_found:"):
+            port_number = condition[11:]  # Remove "port_found:" prefix
+            # Look for patterns like "80/tcp" or "443/udp"
+            port_pattern = rf"\b{re.escape(port_number)}/(?:tcp|udp)\b"
+            if re.search(port_pattern, recent_text, re.IGNORECASE):
+                return (True, f"Port found: {port_number}")
+            continue
+
+        # max_time:<seconds> — always returns False (handled externally)
+        if condition.startswith("max_time:"):
+            # Time-based conditions are handled externally
+            continue
+
+    # No conditions matched
+    return (False, "")

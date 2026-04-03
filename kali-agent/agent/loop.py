@@ -6,36 +6,21 @@ interacts with the LLM, and executes skills.
 """
 
 import asyncio
+import json
 import logging
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from pydantic import BaseModel
-
-from .conditions import LoopCondition, MaxIterationsCondition
+from .conditions import check_stop_conditions
 from .context import ContextManager
 from .llm import LLMClient
+from ..skills.registry import SkillRegistry
+from ..tasks.models import AgentTask, TaskState
 
 logger = logging.getLogger(__name__)
 
-
-class LoopState(Enum):
-    """State of the agent loop."""
-    IDLE = "idle"
-    PROCESSING = "processing"
-    WAITING_FOR_CONFIRMATION = "waiting_for_confirmation"
-    ERROR = "error"
-    COMPLETED = "completed"
-
-
-@dataclass
-class LoopResult:
-    """Result of an agent loop iteration."""
-    success: bool
-    response: str
-    actions_taken: list[dict[str, Any]] = field(default_factory=list)
-    error: Optional[str] = None
+# Type aliases for callbacks
+StatusCallback = Optional[Callable[[str, str], Any]]  # (task_id, message) -> awaitable
+ConfirmCallback = Optional[Callable[[str, str, dict], Any]]  # (task_id, skill_name, args) -> awaitable bool
 
 
 class AgentLoop:
@@ -44,176 +29,367 @@ class AgentLoop:
     
     The loop processes user messages, generates LLM responses, executes
     requested skills, and manages the conversation context.
+    
+    Attributes:
+        llm: LLM client for generating responses.
+        skills: Registry of available skills.
+        context_mgr: Manager for conversation context.
+        status_callback: Optional async callback for status updates.
+        confirm_callback: Optional async callback for dangerous skill confirmation.
+        active_tasks: Dictionary of currently active tasks by task_id.
     """
     
     def __init__(
         self,
-        llm_config: Any,
-        agent_config: Any,
-        store: Any,
+        llm: LLMClient,
+        skills: SkillRegistry,
+        context_mgr: ContextManager,
+        status_callback: StatusCallback = None,
+        confirm_callback: ConfirmCallback = None,
     ) -> None:
         """
         Initialize the agent loop.
         
         Args:
-            llm_config: LLM configuration settings.
-            agent_config: Agent configuration settings.
-            store: Data store for persistence.
+            llm: LLM client for generating responses.
+            skills: Registry of available skills.
+            context_mgr: Manager for conversation context.
+            status_callback: Optional async callback for status updates (task_id, message).
+            confirm_callback: Optional async callback for dangerous skill confirmation
+                (task_id, skill_name, args) -> bool.
         """
-        self.llm_client = LLMClient(
-            base_url=llm_config.base_url,
-            api_key=llm_config.api_key,
-            model=llm_config.model,
-        )
-        self.max_iterations = agent_config.max_iterations
-        self.default_timeout = agent_config.default_timeout
-        self.confirm_dangerous = agent_config.confirm_dangerous
-        self.store = store
-        self.context_manager = ContextManager(store)
-        self.state = LoopState.IDLE
-        self._pending_confirmation: Optional[dict[str, Any]] = None
+        self.llm = llm
+        self.skills = skills
+        self.context_mgr = context_mgr
+        self.status_callback = status_callback
+        self.confirm_callback = confirm_callback
+        self.active_tasks: dict[str, AgentTask] = {}
     
-    async def process_message(
-        self,
-        user_id: int,
-        message: str,
-        conversation_id: Optional[str] = None,
-    ) -> LoopResult:
+    def _build_system_prompt(self, task: AgentTask) -> str:
         """
-        Process a user message through the agent loop.
+        Build the system prompt for the LLM.
+        
+        Constructs a system prompt including role description, current goal,
+        rules, stop conditions, and iteration count.
         
         Args:
-            user_id: Telegram user ID.
-            message: User message text.
-            conversation_id: Optional conversation ID for context.
+            task: The agent task to build the prompt for.
         
         Returns:
-            LoopResult: Result of processing the message.
+            str: The complete system prompt.
         """
-        self.state = LoopState.PROCESSING
-        actions_taken: list[dict[str, Any]] = []
+        stop_conditions_text = "\n".join(
+            f"  - {cond}" for cond in task.config.stop_conditions
+        ) if task.config.stop_conditions else "  - None specified"
+        
+        system_prompt = f"""You are an advanced penetration testing AI assistant running on Kali Linux. You have access to various security tools and skills to assist with authorized security assessments.
+
+## Current Goal
+{task.config.goal}
+
+## Rules
+1. Think step-by-step before taking any action.
+2. Explain your reasoning before making tool calls.
+3. Analyze results carefully after each tool execution.
+4. Summarize your findings periodically.
+5. When you have completed the objective, say "TASK_COMPLETE" in your response.
+6. If you encounter errors, try to diagnose and recover before giving up.
+7. Always work within legal and ethical boundaries.
+
+## Stop Conditions
+The task will be considered complete if any of these conditions are met:
+{stop_conditions_text}
+
+## Progress
+Current iteration: {task.current_iteration}/{task.config.max_iterations}
+
+Remember to be thorough, methodical, and document your findings as you work."""
+        
+        return system_prompt
+    
+    async def run(self, task: AgentTask) -> None:
+        """
+        Execute the agent task loop.
+        
+        Main execution loop that:
+        1. Sets task state to RUNNING
+        2. Initializes messages with system prompt and user goal
+        3. Iterates: calls LLM, executes tools, checks conditions
+        4. Handles completion, cancellation, or failure
+        
+        Args:
+            task: The agent task to execute.
+        """
+        task.state = TaskState.RUNNING
+        self.active_tasks[task.task_id] = task
         
         try:
-            # Load or create conversation context
-            context = await self.context_manager.get_or_create(
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
+            await self._notify(task, f"Starting task: {task.config.goal}")
             
-            # Add user message to context
-            context.add_message(role="user", content=message)
+            # Initialize messages with system prompt and user goal
+            system_prompt = self._build_system_prompt(task)
+            task.messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": task.config.goal},
+            ]
             
-            iterations = 0
-            response = ""
-            
-            while iterations < self.max_iterations:
-                iterations += 1
-                logger.debug(f"Loop iteration {iterations}/{self.max_iterations}")
+            # Main execution loop
+            while (
+                task.state == TaskState.RUNNING
+                and task.current_iteration < task.config.max_iterations
+            ):
+                # Check for cancellation
+                if task.cancel_event.is_set():
+                    task.state = TaskState.STOPPED
+                    await self._notify(task, "Task cancelled by user")
+                    logger.info(f"Task {task.task_id} cancelled")
+                    break
                 
-                # Generate LLM response
-                llm_response = await self.llm_client.generate(
-                    messages=context.get_messages(),
-                    timeout=self.default_timeout,
+                # Increment iteration and update system prompt
+                task.current_iteration += 1
+                task.messages[0]["content"] = self._build_system_prompt(task)
+                
+                logger.debug(
+                    f"Task {task.task_id} iteration {task.current_iteration}/{task.config.max_iterations}"
                 )
                 
-                response = llm_response.content
-                context.add_message(role="assistant", content=response)
-                
-                # Check for skill execution requests
-                if llm_response.tool_calls:
-                    for tool_call in llm_response.tool_calls:
-                        action_result = await self._execute_tool(tool_call, context)
-                        actions_taken.append(action_result)
-                        context.add_message(
-                            role="tool",
-                            content=str(action_result),
-                            tool_call_id=tool_call.get("id"),
+                try:
+                    # Get all available tools from the skill registry
+                    all_tools = self.skills.all_tools()
+                    
+                    # Call LLM with messages and tools
+                    llm_response = await self.llm.chat(
+                        messages=task.messages,
+                        tools=all_tools if all_tools else None,
+                    )
+                    
+                    # Check if response has tool calls
+                    if not llm_response.tool_calls:
+                        # No tool calls - append assistant message
+                        assistant_content = llm_response.content or ""
+                        task.messages.append({
+                            "role": "assistant",
+                            "content": assistant_content,
+                        })
+                        
+                        # Check for task completion keyword
+                        if "TASK_COMPLETE" in assistant_content.upper():
+                            task.state = TaskState.COMPLETED
+                            await self._notify(task, "Task completed successfully")
+                            logger.info(f"Task {task.task_id} completed via TASK_COMPLETE")
+                            continue
+                    
+                    else:
+                        # Has tool calls - append assistant message with tool_calls
+                        assistant_message: dict[str, Any] = {
+                            "role": "assistant",
+                            "content": llm_response.content,
+                        }
+                        
+                        # Format tool calls for the message
+                        if llm_response.tool_calls:
+                            assistant_message["tool_calls"] = [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for tc in llm_response.tool_calls
+                            ]
+                        
+                        task.messages.append(assistant_message)
+                        
+                        # Process each tool call
+                        for tool_call in llm_response.tool_calls:
+                            tool_call_id = tool_call.id
+                            function_name = tool_call.function.name
+                            
+                            try:
+                                # Parse JSON arguments
+                                arguments_str = tool_call.function.arguments
+                                if isinstance(arguments_str, str):
+                                    arguments = json.loads(arguments_str)
+                                else:
+                                    arguments = arguments_str or {}
+                            except json.JSONDecodeError as e:
+                                logger.error(f"Failed to parse tool arguments: {e}")
+                                task.messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": f"Error: Invalid JSON arguments - {str(e)}",
+                                })
+                                continue
+                            
+                            # Get skill from registry
+                            skill = self.skills.get(function_name)
+                            
+                            if skill is None:
+                                error_msg = f"Unknown skill: {function_name}"
+                                logger.warning(error_msg)
+                                task.messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": error_msg,
+                                })
+                                continue
+                            
+                            # Check if skill is dangerous and requires confirmation
+                            if skill.dangerous and self.confirm_callback:
+                                await self._notify(
+                                    task,
+                                    f"Confirmation required for dangerous skill: {function_name}",
+                                )
+                                
+                                try:
+                                    confirmed = await self.confirm_callback(
+                                        task.task_id,
+                                        function_name,
+                                        arguments,
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Error in confirm callback: {e}")
+                                    confirmed = False
+                                
+                                if not confirmed:
+                                    task.messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call_id,
+                                        "content": "User denied the execution of this dangerous skill.",
+                                    })
+                                    await self._notify(task, f"Skill {function_name} denied by user")
+                                    continue
+                            
+                            # Execute the skill
+                            await self._notify(task, f"Running skill: {function_name}")
+                            
+                            try:
+                                result = await skill.execute(**arguments)
+                                
+                                # Format result output
+                                if result.success:
+                                    output = result.output
+                                    if result.follow_up_hint:
+                                        output += f"\n\nFollow-up hint: {result.follow_up_hint}"
+                                    if result.artifacts:
+                                        output += f"\n\nArtifacts: {', '.join(result.artifacts)}"
+                                        task.artifacts.extend(result.artifacts)
+                                else:
+                                    output = f"Skill failed: {result.output}"
+                                
+                                # Truncate output if too long (keep first 4000 chars)
+                                max_output_length = 4000
+                                if len(output) > max_output_length:
+                                    output = output[:max_output_length] + "\n...[truncated]"
+                                
+                                task.messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": output,
+                                })
+                                
+                                await self._notify(
+                                    task,
+                                    f"Skill {function_name} completed: {'success' if result.success else 'failed'}",
+                                )
+                                
+                            except Exception as e:
+                                error_msg = f"Error executing skill {function_name}: {str(e)}"
+                                logger.exception(error_msg)
+                                task.messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": error_msg,
+                                })
+                                await self._notify(task, f"Skill {function_name} error: {str(e)}")
+                    
+                    # Check stop conditions
+                    if task.config.stop_conditions:
+                        should_stop, reason = await check_stop_conditions(
+                            task.config.stop_conditions,
+                            task.messages,
                         )
-                else:
-                    # No tool calls, we're done
-                    break
+                        if should_stop:
+                            task.state = TaskState.COMPLETED
+                            await self._notify(task, f"Stop condition met: {reason}")
+                            logger.info(f"Task {task.task_id} stopped: {reason}")
+                            break
+                    
+                    # Check if context should be compressed
+                    if hasattr(self.context_mgr, 'should_compress') and hasattr(self.context_mgr, 'compress'):
+                        if self.context_mgr.should_compress(task.messages):
+                            task.messages = await self.context_mgr.compress(task.messages)
+                            logger.debug(f"Compressed context for task {task.task_id}")
+                
+                except Exception as e:
+                    logger.exception(f"Error in iteration {task.current_iteration}: {e}")
+                    # Add error to messages so LLM can try to recover
+                    task.messages.append({
+                        "role": "user",
+                        "content": f"An error occurred: {str(e)}. Please try a different approach.",
+                    })
             
-            # Save updated context
-            await self.context_manager.save(context)
-            
-            self.state = LoopState.COMPLETED
-            return LoopResult(
-                success=True,
-                response=response,
-                actions_taken=actions_taken,
-            )
-            
-        except asyncio.TimeoutError:
-            self.state = LoopState.ERROR
-            logger.error("Agent loop timed out")
-            return LoopResult(
-                success=False,
-                response="Operation timed out. Please try again.",
-                error="timeout",
-            )
+            # Handle max iterations reached
+            if (
+                task.state == TaskState.RUNNING
+                and task.current_iteration >= task.config.max_iterations
+            ):
+                task.state = TaskState.COMPLETED
+                await self._notify(
+                    task,
+                    f"Reached maximum iterations ({task.config.max_iterations}). Task paused.",
+                )
+                logger.info(f"Task {task.task_id} reached max iterations")
+        
         except Exception as e:
-            self.state = LoopState.ERROR
-            logger.exception("Error in agent loop")
-            return LoopResult(
-                success=False,
-                response=f"An error occurred: {str(e)}",
-                error=str(e),
-            )
+            task.state = TaskState.FAILED
+            task.error = str(e)
+            logger.exception(f"Task {task.task_id} failed with error: {e}")
+            await self._notify(task, f"Task failed: {str(e)}")
+        
+        finally:
+            # Remove from active tasks
+            if task.task_id in self.active_tasks:
+                del self.active_tasks[task.task_id]
+            logger.info(f"Task {task.task_id} finished with state: {task.state}")
     
-    async def _execute_tool(
-        self,
-        tool_call: dict[str, Any],
-        context: Any,
-    ) -> dict[str, Any]:
+    def stop_task(self, task_id: str) -> bool:
         """
-        Execute a tool call requested by the LLM.
+        Stop a running task by setting its cancel event.
         
         Args:
-            tool_call: Tool call specification from the LLM.
-            context: Current conversation context.
+            task_id: The ID of the task to stop.
         
         Returns:
-            dict: Result of the tool execution.
+            bool: True if the task was found and signalled to stop,
+                False if the task was not found.
         """
-        tool_name = tool_call.get("name", "unknown")
-        tool_args = tool_call.get("arguments", {})
-        
-        logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
-        
-        # TODO: Implement actual tool execution via skill registry
-        return {
-            "tool": tool_name,
-            "status": "not_implemented",
-            "message": f"Tool '{tool_name}' execution not yet implemented",
-        }
+        if task_id in self.active_tasks:
+            task = self.active_tasks[task_id]
+            task.cancel_event.set()
+            logger.info(f"Signalled task {task_id} to stop")
+            return True
+        logger.warning(f"Cannot stop task {task_id}: not found in active tasks")
+        return False
     
-    async def confirm_action(self, confirmed: bool) -> Optional[LoopResult]:
+    async def _notify(self, task: AgentTask, message: str) -> None:
         """
-        Confirm or reject a pending dangerous action.
+        Send a status notification via the callback.
         
         Args:
-            confirmed: Whether the user confirmed the action.
-        
-        Returns:
-            Optional[LoopResult]: Result if there was a pending action, None otherwise.
+            task: The task to notify about.
+            message: The status message to send.
         """
-        if not self._pending_confirmation:
-            return None
-        
-        if confirmed:
-            # Resume execution with confirmation
-            pending = self._pending_confirmation
-            self._pending_confirmation = None
-            # TODO: Resume the pending action
-            return LoopResult(
-                success=True,
-                response="Action confirmed. Proceeding...",
-            )
-        else:
-            self._pending_confirmation = None
-            self.state = LoopState.IDLE
-            return LoopResult(
-                success=False,
-                response="Action cancelled by user.",
-                error="cancelled",
-            )
+        if self.status_callback is not None:
+            try:
+                # Check if callback is a coroutine function
+                import inspect
+                if inspect.iscoroutinefunction(self.status_callback):
+                    await self.status_callback(task.task_id, message)
+                else:
+                    # Call synchronously if not async
+                    self.status_callback(task.task_id, message)
+            except Exception as e:
+                logger.error(f"Error in status callback: {e}")

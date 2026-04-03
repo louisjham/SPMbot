@@ -5,6 +5,8 @@ This module defines Pydantic models for tasks, including task status,
 priorities, and result structures.
 """
 
+import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
@@ -270,3 +272,48 @@ class TaskStats(BaseModel):
         if total_finished == 0:
             return 0.0
         return self.completed_tasks / total_finished
+
+
+class TaskState(str, Enum):
+    """State of an agent task in the execution loop."""
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_CONFIRMATION = "waiting_confirmation"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STOPPED = "stopped"
+
+
+class TaskConfig(BaseModel):
+    """Configuration for an agent task."""
+    goal: str = Field(..., description="The goal or objective for the agent to accomplish")
+    max_iterations: int = Field(default=50, description="Maximum number of iterations allowed")
+    stop_conditions: list[str] = Field(
+        default_factory=list,
+        description="List of conditions that trigger task completion",
+    )
+    notify_every_n: int = Field(default=1, description="Notify user every N iterations")
+    require_confirm_dangerous: bool = Field(
+        default=True,
+        description="Whether to require confirmation for dangerous operations",
+    )
+
+
+@dataclass
+class AgentTask:
+    """
+    Runtime task object for agent execution.
+    
+    Represents an active task being processed by the agent loop,
+    including its configuration, state, and execution history.
+    """
+    task_id: str
+    config: TaskConfig
+    state: TaskState = TaskState.PENDING
+    messages: list[dict] = field(default_factory=list)
+    current_iteration: int = 0
+    artifacts: list[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    error: str | None = None

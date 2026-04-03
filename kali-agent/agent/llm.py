@@ -5,23 +5,14 @@ This module provides a client for interacting with OpenAI-compatible APIs,
 supporting both chat completions and function calling.
 """
 
-import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
-from openai import AsyncOpenAI
+from openai import APIError, AsyncOpenAI
+from openai.types.chat import ChatCompletionMessage
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class LLMResponse:
-    """Response from the LLM."""
-    content: str
-    tool_calls: list[dict[str, Any]]
-    finish_reason: str
-    usage: dict[str, int]
 
 
 class LLMClient:
@@ -50,133 +41,83 @@ class LLMClient:
             api_key=api_key,
         )
         self.model = model
-        self._tools: list[dict[str, Any]] = []
     
-    def register_tool(self, tool_definition: dict[str, Any]) -> None:
-        """
-        Register a tool for function calling.
-        
-        Args:
-            tool_definition: OpenAI-compatible tool definition.
-        """
-        self._tools.append(tool_definition)
-        logger.debug(f"Registered tool: {tool_definition.get('function', {}).get('name')}")
-    
-    def register_tools(self, tools: list[dict[str, Any]]) -> None:
-        """
-        Register multiple tools for function calling.
-        
-        Args:
-            tools: List of OpenAI-compatible tool definitions.
-        """
-        for tool in tools:
-            self.register_tool(tool)
-    
-    async def generate(
+    async def chat(
         self,
         messages: list[dict[str, Any]],
-        *,
-        timeout: int = 300,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-    ) -> LLMResponse:
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.1,
+    ) -> ChatCompletionMessage:
         """
-        Generate a completion from the LLM.
+        Generate a chat completion from the LLM.
         
         Args:
             messages: List of message dictionaries with 'role' and 'content'.
-            timeout: Request timeout in seconds.
-            temperature: Sampling temperature (0.0 to 2.0).
-            max_tokens: Maximum tokens to generate.
+            tools: Optional list of OpenAI-compatible tool definitions.
+            temperature: Sampling temperature (0.0 to 2.0), defaults to 0.1.
         
         Returns:
-            LLMResponse: The generated response.
+            ChatCompletionMessage: The first choice's message from the response.
         
         Raises:
-            asyncio.TimeoutError: If the request times out.
-            Exception: If the API returns an error.
+            APIError: If the API returns an error, wrapped with a meaningful message.
         """
-        logger.debug(f"Generating completion with {len(messages)} messages")
+        logger.debug(f"Generating chat completion with {len(messages)} messages")
         
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
+            "max_tokens": 4096,
             "temperature": temperature,
         }
         
-        if max_tokens:
-            kwargs["max_tokens"] = max_tokens
-        
-        if self._tools:
-            kwargs["tools"] = self._tools
+        if tools:
+            kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
         
         try:
-            response = await asyncio.wait_for(
-                self.client.chat.completions.create(**kwargs),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            logger.error("LLM request timed out")
+            response = await self.client.chat.completions.create(**kwargs)
+            return response.choices[0].message
+        except APIError as e:
+            error_message = f"LLM request failed: {e}"
+            logger.error(error_message)
             raise
-        
-        choice = response.choices[0]
-        
-        # Extract tool calls if present
-        tool_calls = []
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                tool_calls.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                })
-        
-        return LLMResponse(
-            content=choice.message.content or "",
-            tool_calls=tool_calls,
-            finish_reason=choice.finish_reason,
-            usage={
-                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                "total_tokens": response.usage.total_tokens if response.usage else 0,
-            },
-        )
     
-    async def generate_streaming(
+    async def chat_stream(
         self,
         messages: list[dict[str, Any]],
-        *,
-        timeout: int = 300,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-    ):
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Any:
         """
-        Generate a streaming completion from the LLM.
+        Generate a streaming chat completion from the LLM.
         
         Args:
-            messages: List of message dictionaries.
-            timeout: Request timeout in seconds.
-            temperature: Sampling temperature.
-            max_tokens: Maximum tokens to generate.
+            messages: List of message dictionaries with 'role' and 'content'.
+            tools: Optional list of OpenAI-compatible tool definitions.
         
-        Yields:
-            str: Chunks of the generated content.
+        Returns:
+            AsyncStream: The streaming response object.
+        
+        Raises:
+            APIError: If the API returns an error, wrapped with a meaningful message.
         """
-        logger.debug(f"Starting streaming completion with {len(messages)} messages")
+        logger.debug(f"Starting streaming chat completion with {len(messages)} messages")
         
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
+            "max_tokens": 4096,
             "stream": True,
         }
         
-        if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
         
-        stream = await self.client.chat.completions.create(**kwargs)
-        
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        try:
+            stream = await self.client.chat.completions.create(**kwargs)
+            return stream
+        except APIError as e:
+            error_message = f"LLM streaming request failed: {e}"
+            logger.error(error_message)
+            raise

@@ -5,15 +5,20 @@ This module provides async SQLite storage for conversations, tasks,
 and skill executions using aiosqlite.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from tasks.models import AgentTask
 
 logger = logging.getLogger(__name__)
 
@@ -686,3 +691,274 @@ class SQLiteStore:
                     }
                     for row in rows
                 ]
+
+
+class AgentStore:
+    """
+    Async SQLite storage backend for Agent tasks.
+    
+    Provides persistent storage for agent tasks, messages, and artifacts
+    with async operations using aiosqlite.
+    
+    Example:
+        store = AgentStore("./data/agent.db")
+        await store.initialize()
+        await store.save_task(task)
+        await store.close()
+    """
+    
+    def __init__(self, db_path: str) -> None:
+        """
+        Initialize the AgentStore.
+        
+        Args:
+            db_path: Path to the SQLite database file.
+        """
+        self.db_path = db_path
+        self._db: Optional[aiosqlite.Connection] = None
+    
+    async def initialize(self) -> None:
+        """
+        Establish database connection and create tables.
+        
+        Creates the database file and tables if they don't exist.
+        """
+        # Ensure directory exists
+        db_path = Path(self.db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        self._db = await aiosqlite.connect(self.db_path)
+        
+        # Enable foreign keys
+        await self._db.execute("PRAGMA foreign_keys=ON")
+        
+        # Create tables
+        await self._db.executescript("""
+            -- Tasks table
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                goal TEXT NOT NULL,
+                state TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                error TEXT
+            );
+            
+            -- Task messages table
+            CREATE TABLE IF NOT EXISTS task_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool_call_id TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+            
+            -- Artifacts table
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                description TEXT,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+            
+            -- Indexes for faster lookups
+            CREATE INDEX IF NOT EXISTS idx_task_messages_task_id ON task_messages(task_id);
+            CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON artifacts(task_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+        """)
+        
+        await self._db.commit()
+        
+        logger.info(f"AgentStore connected to SQLite database: {self.db_path}")
+    
+    async def save_task(self, task: "AgentTask") -> None:
+        """
+        Save or update a task record.
+        
+        Performs an upsert operation - inserts if new, updates if exists.
+        
+        Args:
+            task: The AgentTask object to save.
+        """
+        from tasks.models import TaskConfig
+        
+        config_json = task.config.model_dump_json() if isinstance(task.config, TaskConfig) else json.dumps(task.config)
+        created_at = task.created_at.isoformat() if task.created_at else datetime.utcnow().isoformat()
+        # AgentTask doesn't have completed_at, will be set when task completes
+        completed_at = None
+        state = task.state.value if hasattr(task.state, 'value') else str(task.state)
+        
+        await self._db.execute(
+            """
+            INSERT INTO tasks (id, goal, state, config_json, created_at, completed_at, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                goal = excluded.goal,
+                state = excluded.state,
+                config_json = excluded.config_json,
+                completed_at = excluded.completed_at,
+                error = excluded.error
+            """,
+            (
+                task.task_id,
+                task.config.goal,
+                state,
+                config_json,
+                created_at,
+                completed_at,
+                task.error,
+            ),
+        )
+        await self._db.commit()
+        
+        logger.debug(f"Saved task {task.task_id}")
+    
+    async def save_message(self, task_id: str, message: dict) -> None:
+        """
+        Save a message for a task.
+        
+        Args:
+            task_id: The ID of the task the message belongs to.
+            message: The message dictionary containing role, content, and optional tool_call_id.
+        """
+        timestamp = message.get("timestamp") or datetime.utcnow().isoformat()
+        
+        await self._db.execute(
+            """
+            INSERT INTO task_messages (task_id, role, content, tool_call_id, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                message.get("role", "unknown"),
+                message.get("content", ""),
+                message.get("tool_call_id"),
+                timestamp,
+            ),
+        )
+        await self._db.commit()
+        
+        logger.debug(f"Saved message for task {task_id}")
+    
+    async def get_task(self, task_id: str) -> Optional[dict]:
+        """
+        Retrieve a task by ID.
+        
+        Args:
+            task_id: The ID of the task to retrieve.
+        
+        Returns:
+            Task dictionary or None if not found.
+        """
+        async with self._db.execute(
+            "SELECT id, goal, state, config_json, created_at, completed_at, error FROM tasks WHERE id = ?",
+            (task_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            
+            return {
+                "id": row[0],
+                "goal": row[1],
+                "state": row[2],
+                "config": json.loads(row[3]) if row[3] else {},
+                "created_at": row[4],
+                "completed_at": row[5],
+                "error": row[6],
+            }
+    
+    async def get_task_history(self, limit: int = 20) -> list[dict]:
+        """
+        Retrieve recent tasks.
+        
+        Args:
+            limit: Maximum number of tasks to return.
+        
+        Returns:
+            List of task dictionaries ordered by creation date (newest first).
+        """
+        async with self._db.execute(
+            """
+            SELECT id, goal, state, config_json, created_at, completed_at, error
+            FROM tasks
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            
+            return [
+                {
+                    "id": row[0],
+                    "goal": row[1],
+                    "state": row[2],
+                    "config": json.loads(row[3]) if row[3] else {},
+                    "created_at": row[4],
+                    "completed_at": row[5],
+                    "error": row[6],
+                }
+                for row in rows
+            ]
+    
+    async def get_task_messages(self, task_id: str) -> list[dict]:
+        """
+        Retrieve all messages for a task.
+        
+        Args:
+            task_id: The ID of the task.
+        
+        Returns:
+            List of message dictionaries ordered by timestamp.
+        """
+        async with self._db.execute(
+            """
+            SELECT id, task_id, role, content, tool_call_id, timestamp
+            FROM task_messages
+            WHERE task_id = ?
+            ORDER BY timestamp ASC
+            """,
+            (task_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            
+            return [
+                {
+                    "id": row[0],
+                    "task_id": row[1],
+                    "role": row[2],
+                    "content": row[3],
+                    "tool_call_id": row[4],
+                    "timestamp": row[5],
+                }
+                for row in rows
+            ]
+    
+    async def close(self) -> None:
+        """Close the database connection."""
+        if self._db:
+            await self._db.close()
+            self._db = None
+            logger.info("AgentStore database connection closed")
+    
+    @asynccontextmanager
+    async def transaction(self):
+        """
+        Async context manager for database transactions.
+        
+        Provides a transaction scope that commits on success or rolls back on error.
+        
+        Yields:
+            The database connection for use within the transaction.
+        """
+        try:
+            yield self._db
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
