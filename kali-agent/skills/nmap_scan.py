@@ -31,41 +31,44 @@ class NmapScan(Skill):
         "udp": "-sU -T4 --top-ports 100",
     }
     
-    name: str = "nmap_scan"
-    description: str = (
-        "Perform network scans using nmap with predefined profiles. "
-        "Supports quick, full, stealth, vulnerability, and UDP scans."
-    )
-    parameters: list[ToolParameter] = [
-        ToolParameter(
-            name="target",
-            type="string",
-            description="Target host, IP address, or network range to scan (e.g., '192.168.1.1' or 'scanme.nmap.org')",
-            required=True,
-        ),
-        ToolParameter(
-            name="scan_type",
-            type="string",
-            description="Type of scan to perform",
-            required=False,
-            enum=["quick", "full", "stealth", "vuln", "udp"],
-        ),
-        ToolParameter(
-            name="ports",
-            type="string",
-            description="Specific ports to scan (e.g., '22,80,443' or '1-1000')",
-            required=False,
-        ),
-        ToolParameter(
-            name="additional_flags",
-            type="string",
-            description="Additional nmap flags to append to the command",
-            required=False,
-        ),
-    ]
-    dangerous: bool = True
-    timeout: int = 600
-    slash_command: str | None = "/scan"
+    def __init__(self):
+        super().__init__(
+            name="nmap_scan",
+            description=(
+                "Perform network scans using nmap with predefined profiles. "
+                "Supports quick, full, stealth, vulnerability, and UDP scans."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="target",
+                    type="string",
+                    description="Target host, IP address, or network range to scan (e.g., '192.168.1.1' or 'scanme.nmap.org')",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="scan_type",
+                    type="string",
+                    description="Type of scan to perform",
+                    required=False,
+                    enum=["quick", "full", "stealth", "vuln", "udp"],
+                ),
+                ToolParameter(
+                    name="ports",
+                    type="string",
+                    description="Specific ports to scan (e.g., '22,80,443' or '1-1000')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="additional_flags",
+                    type="string",
+                    description="Additional nmap flags to append to the command",
+                    required=False,
+                ),
+            ],
+            dangerous=True,
+            timeout=600,
+            slash_command="/scan"
+        )
     
     async def execute(self, **kwargs: Any) -> SkillResult:
         """Execute an nmap scan with the specified parameters.

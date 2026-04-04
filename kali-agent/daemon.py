@@ -22,7 +22,6 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.context import ContextManager
 from agent.llm import LLMClient
 from agent.loop import AgentLoop
 from bot.telegram import TelegramInterface
@@ -158,16 +157,12 @@ async def main() -> None:
     # 7. Initialize store, call await store.connect()
     await store.connect()
     logger.info(f"Initialized SQLite store at {store_path}")
-    
-    # Now create ContextManager with the store
-    context_mgr = ContextManager(store=store)
-    logger.info("Initialized context manager")
-    
-    # 6. Initialize AgentLoop with llm, skills, context_mgr
+
+    # Initialize AgentLoop with llm, skills, store
     agent_loop = AgentLoop(
         llm=llm_client,
         skills=skills,
-        context_mgr=context_mgr,
+        store=store,
     )
     logger.info("Initialized agent loop")
     
@@ -219,13 +214,32 @@ async def main() -> None:
     try:
         # Start bot in background task
         bot_task = asyncio.create_task(bot.start())
+        logger.debug("Created bot task, waiting for shutdown signal or bot completion")
         
         # Wait for either bot to stop or shutdown signal
-        await asyncio.gather(
-            bot_task,
-            shutdown_event.wait(),
-            return_exceptions=True,
+        # Use wait() with FIRST_COMPLETED to avoid hanging on bot_task
+        done, pending = await asyncio.wait(
+            [bot_task, asyncio.create_task(shutdown_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
         )
+        
+        logger.info(f"Wait completed. Done tasks: {len(done)}, Pending tasks: {len(pending)}")
+        
+        # Cancel any pending tasks
+        for task in pending:
+            logger.info(f"Cancelling pending task: {task}")
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.info(f"Task cancelled successfully")
+        
+        # Stop the bot dispatcher explicitly
+        if not bot_task.done():
+            logger.info("Explicitly stopping bot dispatcher...")
+            await bot.stop()
+            logger.info("Bot dispatcher stopped")
+            
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     except Exception as e:

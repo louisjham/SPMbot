@@ -379,3 +379,12 @@ class TelegramInterface:
         """
         await self.setup_bot_commands()
         await self.dp.start_polling(self.bot)
+    
+    async def stop(self) -> None:
+        """
+        Stop the Telegram bot polling loop.
+        
+        Stops the dispatcher polling and closes the bot session.
+        """
+        await self.dp.stop_polling()
+        await self.bot.session.close()

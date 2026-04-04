@@ -129,6 +129,26 @@ check_os() {
     fi
 }
 
+check_python_version() {
+    log_step "Checking Python version..."
+    
+    if ! command -v python3 &> /dev/null; then
+        error_exit "python3 not found. Please install Python 3.11 or higher."
+    fi
+    
+    PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+    PYTHON_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
+    PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
+    log_info "Detected Python $PYTHON_VERSION"
+
+    if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 11 ]; }; then
+        log_error "Python 3.11+ required. Found $PYTHON_VERSION"
+        exit 1
+    fi
+
+    log_success "Python version $PYTHON_VERSION is compatible"
+}
+
 #-------------------------------------------------------------------------------
 # Installation Functions
 #-------------------------------------------------------------------------------
@@ -137,8 +157,9 @@ install_dependencies() {
     log_step "Installing system dependencies..."
     
     local packages=(
-        python3.12
-        python3.12-venv
+        python3
+        python3-venv
+        python3-full
         redis-server
         nmap
         gobuster
@@ -213,6 +234,7 @@ copy_project_files() {
     local items=(
         "daemon.py"
         "requirements.txt"
+        "kali-agent.service"
         "agent"
         "bot"
         "config"
@@ -250,8 +272,8 @@ create_virtualenv() {
         rm -rf .venv
     fi
     
-    log_info "Creating virtual environment with Python 3.12..."
-    python3.12 -m venv .venv || error_exit "Failed to create virtual environment."
+    log_info "Creating virtual environment..."
+    python3 -m venv .venv || error_exit "Failed to create virtual environment."
     
     log_info "Upgrading pip..."
     .venv/bin/pip install --upgrade pip -q
@@ -356,8 +378,31 @@ setup_systemd_service() {
         cp "$SCRIPT_DIR/kali-agent.service" "$SERVICE_FILE"
     fi
     
+    # Fallback: generate service file inline if still missing
     if [[ ! -f "$SERVICE_FILE" ]]; then
-        error_exit "kali-agent.service file not found."
+        log_warning "kali-agent.service not found, generating inline..."
+        cat > "$SERVICE_FILE" << 'EOF'
+[Unit]
+Description=Kali Agent - AI-powered security assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/kali-agent
+EnvironmentFile=/opt/kali-agent/.env
+ExecStart=/opt/kali-agent/.venv/bin/python /opt/kali-agent/daemon.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        log_info "Generated kali-agent.service inline."
     fi
     
     # Copy service file to systemd
@@ -422,6 +467,7 @@ main() {
     # Pre-flight checks
     check_root
     check_os
+    check_python_version
     
     # Installation steps
     install_dependencies

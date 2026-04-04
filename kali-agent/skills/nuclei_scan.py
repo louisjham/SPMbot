@@ -26,36 +26,39 @@ class NucleiScan(Skill):
     
     SEVERITY_LEVELS: list[str] = ["info", "low", "medium", "high", "critical"]
     
-    name: str = "nuclei_scan"
-    description: str = (
-        "Perform vulnerability scanning using Nuclei templates. "
-        "Detects security issues, misconfigurations, and exposed services "
-        "with configurable severity filtering."
-    )
-    parameters: list[ToolParameter] = [
-        ToolParameter(
-            name="target",
-            type="string",
-            description="Target URL, hostname, or IP address to scan (e.g., 'https://example.com')",
-            required=True,
-        ),
-        ToolParameter(
-            name="severity",
-            type="string",
-            description="Severity levels to include (comma-separated). Default: 'medium,high,critical'",
-            required=False,
-            enum=["info", "low", "medium", "high", "critical"],
-        ),
-        ToolParameter(
-            name="tags",
-            type="string",
-            description="Template tags to filter (comma-separated, e.g., 'cve,rce,sqli')",
-            required=False,
-        ),
-    ]
-    dangerous: bool = True
-    timeout: int = 600
-    slash_command: str | None = "/nuclei"
+    def __init__(self):
+        super().__init__(
+            name="nuclei_scan",
+            description=(
+                "Perform vulnerability scanning using Nuclei templates. "
+                "Detects security issues, misconfigurations, and exposed services "
+                "with configurable severity filtering."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="target",
+                    type="string",
+                    description="Target URL, hostname, or IP address to scan (e.g., 'https://example.com')",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="severity",
+                    type="string",
+                    description="Severity levels to include (comma-separated). Default: 'medium,high,critical'",
+                    required=False,
+                    enum=["info", "low", "medium", "high", "critical"],
+                ),
+                ToolParameter(
+                    name="tags",
+                    type="string",
+                    description="Template tags to filter (comma-separated, e.g., 'cve,rce,sqli')",
+                    required=False,
+                ),
+            ],
+            dangerous=True,
+            timeout=600,
+            slash_command="/nuclei"
+        )
     
     async def execute(self, **kwargs: Any) -> SkillResult:
         """Execute a Nuclei vulnerability scan with the specified parameters.

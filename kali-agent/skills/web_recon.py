@@ -26,30 +26,33 @@ class WebRecon(Skill):
     
     RECON_DEPTH: list[str] = ["light", "deep"]
     
-    name: str = "web_recon"
-    description: str = (
-        "Perform web reconnaissance on a target domain. "
-        "Light mode runs whois, dig, and curl for basic info. "
-        "Deep mode adds subfinder and httpx for comprehensive enumeration."
-    )
-    parameters: list[ToolParameter] = [
-        ToolParameter(
-            name="domain",
-            type="string",
-            description="Target domain to investigate (e.g., 'example.com')",
-            required=True,
-        ),
-        ToolParameter(
-            name="depth",
-            type="string",
-            description="Reconnaissance depth: 'light' for basic (whois, dig, curl) or 'deep' for full (adds subfinder, httpx)",
-            required=False,
-            enum=["light", "deep"],
-        ),
-    ]
-    dangerous: bool = False
-    timeout: int = 600
-    slash_command: str | None = "/recon"
+    def __init__(self):
+        super().__init__(
+            name="web_recon",
+            description=(
+                "Perform web reconnaissance on a target domain. "
+                "Light mode runs whois, dig, and curl for basic info. "
+                "Deep mode adds subfinder and httpx for comprehensive enumeration."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="domain",
+                    type="string",
+                    description="Target domain to investigate (e.g., 'example.com')",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="depth",
+                    type="string",
+                    description="Reconnaissance depth: 'light' for basic (whois, dig, curl) or 'deep' for full (adds subfinder, httpx)",
+                    required=False,
+                    enum=["light", "deep"],
+                ),
+            ],
+            dangerous=False,
+            timeout=600,
+            slash_command="/recon"
+        )
     
     async def execute(self, **kwargs: Any) -> SkillResult:
         """Execute web reconnaissance with the specified parameters.

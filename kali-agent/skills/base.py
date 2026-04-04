@@ -31,19 +31,23 @@ class ToolParameter:
 @dataclass
 class SkillResult:
     """Result of a skill execution.
-    
+
     Attributes:
         success: Whether the skill execution was successful.
         output: Human-readable output string.
         raw_data: Optional raw data returned by the skill.
         artifacts: List of artifact paths or identifiers generated.
         follow_up_hint: Optional hint for follow-up actions.
+        auto_extract: Whether findings should be auto-extracted from output.
+        findings: Optional list of extracted findings.
     """
     success: bool
     output: str
     raw_data: Any = None
     artifacts: list[str] = field(default_factory=list)
     follow_up_hint: str | None = None
+    auto_extract: bool = False
+    findings: list[dict] = field(default_factory=list)
 
 
 @dataclass

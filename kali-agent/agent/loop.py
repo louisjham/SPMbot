@@ -8,12 +8,17 @@ interacts with the LLM, and executes skills.
 import asyncio
 import json
 import logging
+from dataclasses import asdict
 from typing import Any, Callable, Optional
 
 from agent.conditions import check_stop_conditions
-from agent.context import ContextManager
+from agent.context_manager import ContextManager
+from agent.guardrails import FindingsGuardrail
 from agent.llm import LLMClient
+from agent.prompts import build_system_prompt
+from skills.output_parser import OutputParser
 from skills.registry import SkillRegistry
+from store.sqlite import SQLiteStore
 from tasks.models import AgentTask, TaskState
 
 logger = logging.getLogger(__name__)
@@ -33,59 +38,65 @@ class AgentLoop:
     Attributes:
         llm: LLM client for generating responses.
         skills: Registry of available skills.
+        store: Data store for persisting findings.
         context_mgr: Manager for conversation context.
+        guardrail: Guardrail for validating responses against findings.
+        output_parser: Parser for extracting findings from tool output.
         status_callback: Optional async callback for status updates.
         confirm_callback: Optional async callback for dangerous skill confirmation.
         active_tasks: Dictionary of currently active tasks by task_id.
     """
-    
+
     def __init__(
         self,
         llm: LLMClient,
         skills: SkillRegistry,
-        context_mgr: ContextManager,
+        store: SQLiteStore,
         status_callback: StatusCallback = None,
         confirm_callback: ConfirmCallback = None,
     ) -> None:
         """
         Initialize the agent loop.
-        
+
         Args:
             llm: LLM client for generating responses.
             skills: Registry of available skills.
-            context_mgr: Manager for conversation context.
+            store: Data store for persisting findings.
             status_callback: Optional async callback for status updates (task_id, message).
             confirm_callback: Optional async callback for dangerous skill confirmation
                 (task_id, skill_name, args) -> bool.
         """
         self.llm = llm
         self.skills = skills
-        self.context_mgr = context_mgr
+        self.store = store
+        self.context_mgr = ContextManager()
+        self.guardrail = FindingsGuardrail(self.context_mgr.findings_ctx)
+        self.output_parser = OutputParser()
         self.status_callback = status_callback
         self.confirm_callback = confirm_callback
         self.active_tasks: dict[str, AgentTask] = {}
-    
-    def _build_system_prompt(self, task: AgentTask) -> str:
-        """
-        Build the system prompt for the LLM.
-        
-        Constructs a system prompt including role description, current goal,
-        rules, stop conditions, and iteration count.
-        
+
+    def truncate_tool_output(self, output: str, max_length: int = 4000) -> str:
+        """Truncate tool output if it exceeds max_length.
+
         Args:
-            task: The agent task to build the prompt for.
-        
+            output: The tool output to truncate.
+            max_length: Maximum length before truncation.
+
         Returns:
-            str: The complete system prompt.
+            Truncated output with ellipsis indicator if truncated.
         """
-        stop_conditions_text = "\n".join(
-            f"  - {cond}" for cond in task.config.stop_conditions
-        ) if task.config.stop_conditions else "  - None specified"
-        
-        system_prompt = f"""You are an advanced penetration testing AI assistant running on Kali Linux. You have access to various security tools and skills to assist with authorized security assessments.
+        if len(output) > max_length:
+            return output[:max_length] + "\n...[truncated]"
+        return output
+
+    @property
+    def base_system_prompt(self) -> str:
+        """Get the base system prompt without findings context."""
+        return """You are an advanced penetration testing AI assistant running on Kali Linux. You have access to various security tools and skills to assist with authorized security assessments.
 
 ## Current Goal
-{task.config.goal}
+{goal}
 
 ## Rules
 1. Think step-by-step before taking any action.
@@ -98,13 +109,44 @@ class AgentLoop:
 
 ## Stop Conditions
 The task will be considered complete if any of these conditions are met:
-{stop_conditions_text}
+{stop_conditions}
 
 ## Progress
-Current iteration: {task.current_iteration}/{task.config.max_iterations}
+Current iteration: {current_iteration}/{max_iterations}
 
 Remember to be thorough, methodical, and document your findings as you work."""
-        
+
+    def _build_system_prompt(self, task: AgentTask) -> str:
+        """
+        Build the system prompt for the LLM with findings context.
+
+        Constructs a system prompt including role description, current goal,
+        rules, stop conditions, iteration count, and findings database context.
+
+        Args:
+            task: The agent task to build the prompt for.
+
+        Returns:
+            str: The complete system prompt with findings context.
+        """
+        stop_conditions_text = "\n".join(
+            f"  - {cond}" for cond in task.config.stop_conditions
+        ) if task.config.stop_conditions else "  - None specified"
+
+        # Get findings summary for context
+        findings_summary = self.context_mgr.findings_ctx.render()
+
+        # Build base prompt with goal and iteration info
+        base_prompt = self.base_system_prompt.format(
+            goal=task.config.goal,
+            stop_conditions=stop_conditions_text,
+            current_iteration=task.current_iteration,
+            max_iterations=task.config.max_iterations,
+        )
+
+        # Add findings context using the prompts module
+        system_prompt = build_system_prompt(base_prompt, findings_summary)
+
         return system_prompt
     
     async def run(self, task: AgentTask) -> None:
@@ -156,22 +198,30 @@ Remember to be thorough, methodical, and document your findings as you work."""
                 try:
                     # Get all available tools from the skill registry
                     all_tools = self.skills.all_tools()
-                    
-                    # Call LLM with messages and tools
+
+                    # Prepare messages with context injection
+                    system_prompt = self._build_system_prompt(task)
+                    prepared_messages = self.context_mgr.prepare_messages(task.messages, system_prompt)
+
+                    # Call LLM with prepared messages and tools
                     llm_response = await self.llm.chat(
-                        messages=task.messages,
+                        messages=prepared_messages,
                         tools=all_tools if all_tools else None,
                     )
-                    
+
                     # Check if response has tool calls
                     if not llm_response.tool_calls:
-                        # No tool calls - append assistant message
-                        assistant_content = llm_response.content or ""
+                        # No tool calls - apply guardrail and append assistant message
+                        text, warnings = self.guardrail.annotate(llm_response.content or "")
+                        if warnings:
+                            logger.warning(f"Guardrail flags: {warnings}")
+
+                        assistant_content = text
                         task.messages.append({
                             "role": "assistant",
                             "content": assistant_content,
                         })
-                        
+
                         # Check for task completion keyword
                         if "TASK_COMPLETE" in assistant_content.upper():
                             task.state = TaskState.COMPLETED
@@ -267,7 +317,32 @@ Remember to be thorough, methodical, and document your findings as you work."""
                             
                             try:
                                 result = await skill.execute(**arguments)
-                                
+
+                                # Auto-extract findings if skill supports it
+                                if getattr(result, 'auto_extract', False) and result.auto_extract:
+                                    # Extract target from arguments
+                                    target = (
+                                        arguments.get("target") or
+                                        arguments.get("domain") or
+                                        arguments.get("host") or
+                                        arguments.get("url")
+                                    )
+
+                                    # Parse findings from output
+                                    parsed = self.output_parser.parse(result.output, skill.name, target=target)
+
+                                    # Convert to dict format and update context
+                                    if parsed:
+                                        findings_dicts = [asdict(f) for f in parsed]
+                                        self.context_mgr.findings_ctx.update(findings_dicts)
+
+                                        # Save findings to store
+                                        try:
+                                            await self.store.save_findings(findings_dicts)
+                                            logger.debug(f"Saved {len(findings_dicts)} findings from {skill.name}")
+                                        except Exception as e:
+                                            logger.error(f"Failed to save findings: {e}")
+
                                 # Format result output
                                 if result.success:
                                     output = result.output
@@ -278,18 +353,16 @@ Remember to be thorough, methodical, and document your findings as you work."""
                                         task.artifacts.extend(result.artifacts)
                                 else:
                                     output = f"Skill failed: {result.output}"
-                                
-                                # Truncate output if too long (keep first 4000 chars)
-                                max_output_length = 4000
-                                if len(output) > max_output_length:
-                                    output = output[:max_output_length] + "\n...[truncated]"
-                                
+
+                                # Truncate output if too long
+                                result_content = self.truncate_tool_output(output)
+
                                 task.messages.append({
                                     "role": "tool",
                                     "tool_call_id": tool_call_id,
-                                    "content": output,
+                                    "content": result_content,
                                 })
-                                
+
                                 await self._notify(
                                     task,
                                     f"Skill {function_name} completed: {'success' if result.success else 'failed'}",

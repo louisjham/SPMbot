@@ -235,7 +235,7 @@ def load_yaml_skills(registry: Any, path: str = "config/skills.yaml") -> int:
         return 0
     
     count = 0
-    for skill_config in quick_skills:
+    for skill_config in quick_skills.values():
         try:
             skill = YAMLSkill(skill_config)
             registry.register(skill)

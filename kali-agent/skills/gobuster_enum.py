@@ -25,40 +25,43 @@ class GobusterEnum(Skill):
     
     DEFAULT_WORDLIST: str = "/usr/share/wordlists/dirb/common.txt"
     
-    name: str = "gobuster_enum"
-    description: str = (
-        "Perform directory and file brute forcing using gobuster. "
-        "Discovers hidden paths and files on web servers using wordlist attacks."
-    )
-    parameters: list[ToolParameter] = [
-        ToolParameter(
-            name="url",
-            type="string",
-            description="Target URL to enumerate (e.g., 'http://example.com' or 'https://target:8080')",
-            required=True,
-        ),
-        ToolParameter(
-            name="wordlist",
-            type="string",
-            description="Path to wordlist for enumeration (default: /usr/share/wordlists/dirb/common.txt)",
-            required=False,
-        ),
-        ToolParameter(
-            name="threads",
-            type="integer",
-            description="Number of concurrent threads (default: 50)",
-            required=False,
-        ),
-        ToolParameter(
-            name="extensions",
-            type="string",
-            description="File extensions to search for (e.g., 'php,html,txt,bak')",
-            required=False,
-        ),
-    ]
-    dangerous: bool = True
-    timeout: int = 600
-    slash_command: str | None = "/dirbrute"
+    def __init__(self):
+        super().__init__(
+            name="gobuster_enum",
+            description=(
+                "Perform directory and file brute forcing using gobuster. "
+                "Discovers hidden paths and files on web servers using wordlist attacks."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="url",
+                    type="string",
+                    description="Target URL to enumerate (e.g., 'http://example.com' or 'https://target:8080')",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="wordlist",
+                    type="string",
+                    description="Path to wordlist for enumeration (default: /usr/share/wordlists/dirb/common.txt)",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="threads",
+                    type="integer",
+                    description="Number of concurrent threads (default: 50)",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="extensions",
+                    type="string",
+                    description="File extensions to search for (e.g., 'php,html,txt,bak')",
+                    required=False,
+                ),
+            ],
+            dangerous=True,
+            timeout=600,
+            slash_command="/dirbrute"
+        )
     
     async def execute(self, **kwargs: Any) -> SkillResult:
         """Execute a gobuster directory enumeration with the specified parameters.

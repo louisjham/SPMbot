@@ -25,7 +25,7 @@ from skills.registry import SkillRegistry
 from skills.yaml_loader import YAMLSkill, load_yaml_skills
 from agent.llm import LLMClient
 from agent.loop import AgentLoop
-from agent.context import ContextManager, ConversationContext, Message
+from agent.context_manager import ContextManager, ConversationContext, Message
 from agent.conditions import check_stop_conditions
 from bot.formatters import escape_html, split_message
 from tasks.models import AgentTask, TaskConfig, TaskState
@@ -42,6 +42,7 @@ def mock_store():
     store.get_conversation = AsyncMock(return_value=None)
     store.save_conversation = AsyncMock()
     store.delete_conversation = AsyncMock()
+    store.save_findings = AsyncMock(return_value=0)
     return store
 
 
@@ -774,7 +775,7 @@ class TestAgentLoop:
         agent_loop = AgentLoop(
             llm=mock_llm_client,
             skills=skill_registry,
-            context_mgr=context_manager,
+            store=mock_store,
         )
         
         # Run the task
@@ -830,7 +831,7 @@ class TestAgentLoop:
         agent_loop = AgentLoop(
             llm=mock_llm_client,
             skills=skill_registry,
-            context_mgr=context_manager,
+            store=mock_store,
             confirm_callback=confirm_callback,
         )
         
