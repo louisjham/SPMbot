@@ -863,15 +863,15 @@ class TestAgentLoop:
             mock_response,
             MagicMock(content="TASK_COMPLETE", tool_calls=None),
         ]
-        
+
         agent_loop = AgentLoop(
             llm=mock_llm_client,
             skills=skill_registry,
-            context_mgr=context_manager,
+            store=mock_store,
         )
-        
+
         await agent_loop.run(agent_task)
-        
+
         # Verify error message was added
         tool_messages = [m for m in agent_task.messages if m["role"] == "tool"]
         assert len(tool_messages) == 1
@@ -898,15 +898,15 @@ class TestAgentLoop:
         mock_response.tool_calls = None
         
         mock_llm_client.chat.return_value = mock_response
-        
+
         agent_loop = AgentLoop(
             llm=mock_llm_client,
             skills=skill_registry,
-            context_mgr=context_manager,
+            store=mock_store,
         )
-        
+
         await agent_loop.run(task)
-        
+
         # Should stop at max_iterations
         assert task.current_iteration <= task.config.max_iterations
         assert task.state == TaskState.COMPLETED
@@ -1102,13 +1102,13 @@ quick_skills:
         context = await context_manager.get_or_create(user_id=12345)
         context.add_message("user", "Initial message")
         
-        # Create agent loop with context manager
+        # Create agent loop with store
         agent_loop = AgentLoop(
             llm=mock_llm_client,
             skills=skill_registry,
-            context_mgr=context_manager,
+            store=mock_store,
         )
-        
+
         # Create and run a simple task
         task = AgentTask(
             task_id="integration-test",
@@ -1149,17 +1149,204 @@ quick_skills:
         mock_response.tool_calls = None
         
         mock_llm_client.chat.return_value = mock_response
-        
+
         agent_loop = AgentLoop(
             llm=mock_llm_client,
             skills=skill_registry,
-            context_mgr=context_manager,
+            store=mock_store,
         )
-        
+
         await agent_loop.run(task)
-        
+
         # Should complete due to stop condition
         assert task.state == TaskState.COMPLETED
+
+
+# ============================================================================
+# Test Temperature Configuration
+# ============================================================================
+
+class TestTemperatureConfiguration:
+    """Tests for temperature configuration in AgentLoop."""
+
+    @pytest.mark.asyncio
+    async def test_uses_tool_call_temperature_early_conversation(self, mock_llm_client, skill_registry, mock_store):
+        """Test that tool_call temperature is used early in conversation."""
+        # Create agent loop
+        agent_loop = AgentLoop(
+            llm=mock_llm_client,
+            skills=skill_registry,
+            store=mock_store,
+        )
+
+        # Create a task with minimal messages (early in conversation)
+        task = AgentTask(
+            task_id="temp-test-early",
+            config=TaskConfig(
+                goal="Test temperature",
+                max_iterations=1,
+                stop_conditions=[],
+            ),
+        )
+        task.messages = [
+            {"role": "system", "content": "Test system"},
+            {"role": "user", "content": "Scan the target"},
+        ]
+
+        # Should expect tool call
+        assert agent_loop._expecting_tool_call(task) is True
+
+    @pytest.mark.asyncio
+    async def test_uses_default_temperature_late_conversation(self, mock_llm_client, skill_registry, mock_store):
+        """Test that default temperature is used later in conversation."""
+        # Create agent loop
+        agent_loop = AgentLoop(
+            llm=mock_llm_client,
+            skills=skill_registry,
+            store=mock_store,
+        )
+
+        # Create a task with many messages (late in conversation)
+        task = AgentTask(
+            task_id="temp-test-late",
+            config=TaskConfig(
+                goal="Test temperature",
+                max_iterations=1,
+                stop_conditions=[],
+            ),
+        )
+        task.messages = [
+            {"role": "system", "content": "Test system"},
+            {"role": "user", "content": "Initial message"},
+            {"role": "assistant", "content": "Response"},
+            {"role": "user", "content": "Follow-up"},
+            {"role": "assistant", "content": "Another response"},
+            {"role": "user", "content": "Final question"},
+        ]
+
+        # Should not expect tool call
+        assert agent_loop._expecting_tool_call(task) is False
+
+    @pytest.mark.asyncio
+    async def test_expects_tool_call_after_tool_response(self, mock_llm_client, skill_registry, mock_store):
+        """Test that tool call is expected after tool response."""
+        # Create agent loop
+        agent_loop = AgentLoop(
+            llm=mock_llm_client,
+            skills=skill_registry,
+            store=mock_store,
+        )
+
+        # Create a task with tool calls in history
+        task = AgentTask(
+            task_id="temp-test-tool",
+            config=TaskConfig(
+                goal="Test temperature",
+                max_iterations=1,
+                stop_conditions=[],
+            ),
+        )
+        task.messages = [
+            {"role": "system", "content": "Test system"},
+            {"role": "user", "content": "Scan the target"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_123", "type": "function", "function": {"name": "nmap_scan", "arguments": "{}"}}
+            ]},
+        ]
+
+        # Should expect tool call because last assistant message had tool_calls
+        assert agent_loop._expecting_tool_call(task) is True
+
+    @pytest.mark.asyncio
+    async def test_expects_tool_call_with_action_keywords(self, mock_llm_client, skill_registry, mock_store):
+        """Test that action keywords trigger tool call expectation."""
+        # Create agent loop
+        agent_loop = AgentLoop(
+            llm=mock_llm_client,
+            skills=skill_registry,
+            store=mock_store,
+        )
+
+        # Test various action keywords
+        action_keywords = [
+            "scan the target",
+            "test the port",
+            "check for vulnerabilities",
+            "explore the network",
+            "enumerate hosts",
+            "find open ports",
+            "identify services",
+            "analyze the results",
+            "attack the system",
+            "exploit the vulnerability",
+            "run a scan",
+            "execute the test",
+            "perform reconnaissance",
+            "start the assessment",
+            "begin the scan",
+        ]
+
+        for keyword in action_keywords:
+            task = AgentTask(
+                task_id=f"temp-test-{keyword.replace(' ', '-')}",
+                config=TaskConfig(
+                    goal="Test temperature",
+                    max_iterations=1,
+                    stop_conditions=[],
+                ),
+            )
+            task.messages = [
+                {"role": "system", "content": "Test system"},
+                {"role": "user", "content": "Initial message"},
+                {"role": "assistant", "content": "Response"},
+                {"role": "user", "content": keyword},
+            ]
+
+            assert agent_loop._expecting_tool_call(task) is True, f"Failed for keyword: {keyword}"
+
+    @pytest.mark.asyncio
+    async def test_does_not_expect_tool_call_with_passive_language(self, mock_llm_client, skill_registry, mock_store):
+        """Test that passive language does not trigger tool call expectation."""
+        # Create agent loop
+        agent_loop = AgentLoop(
+            llm=mock_llm_client,
+            skills=skill_registry,
+            store=mock_store,
+        )
+
+        # Test passive/conversational language
+        passive_messages = [
+            "What do you think about this?",
+            "Tell me about security",
+            "Explain the results",
+            "What should I do next?",
+            "How would you approach this?",
+            "Can you help me understand?",
+        ]
+
+        for message in passive_messages:
+            task = AgentTask(
+                task_id=f"temp-test-{hash(message)}",
+                config=TaskConfig(
+                    goal="Test temperature",
+                    max_iterations=1,
+                    stop_conditions=[],
+                ),
+            )
+            task.messages = [
+                {"role": "system", "content": "Test system"},
+                {"role": "user", "content": "Initial message"},
+                {"role": "assistant", "content": "Response"},
+                {"role": "user", "content": message},
+            ]
+
+            # Should not expect tool call for passive language (early in conversation override)
+            # But since we have < 4 messages, it still returns True due to the early conversation check
+            # So we need to add more messages to test this properly
+            task.messages.append({"role": "assistant", "content": "Another response"})
+            task.messages.append({"role": "user", "content": message})
+
+            assert agent_loop._expecting_tool_call(task) is False, f"Should not expect tool call for: {message}"
 
 
 if __name__ == "__main__":

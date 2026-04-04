@@ -12,6 +12,7 @@ from dataclasses import asdict
 from typing import Any, Callable, Optional
 
 from agent.conditions import check_stop_conditions
+from agent.config import get_temperature
 from agent.context_manager import ContextManager
 from agent.guardrails import FindingsGuardrail
 from agent.llm import LLMClient
@@ -89,6 +90,40 @@ class AgentLoop:
         if len(output) > max_length:
             return output[:max_length] + "\n...[truncated]"
         return output
+
+    def _expecting_tool_call(self, task: AgentTask) -> bool:
+        """Determine if we're expecting a tool call in the next response.
+
+        Uses a simple heuristic based on conversation state and content.
+
+        Args:
+            task: The current agent task.
+
+        Returns:
+            True if a tool call is expected, False otherwise.
+        """
+        # Early in conversation, likely executing tools
+        if len(task.messages) < 4:
+            return True
+
+        # Check if last assistant message had tool calls
+        last_message = task.messages[-1] if task.messages else None
+        if last_message and last_message.get("role") == "assistant":
+            if last_message.get("tool_calls"):
+                return True
+
+        # Check if last user message contains action-oriented keywords
+        if task.messages and task.messages[-1].get("role") == "user":
+            user_content = task.messages[-1].get("content", "").lower()
+            action_keywords = [
+                "scan", "test", "check", "explore", "enumerate", "fuzz",
+                "discover", "find", "identify", "analyze", "attack", "exploit",
+                "run", "execute", "perform", "start", "begin"
+            ]
+            if any(keyword in user_content for keyword in action_keywords):
+                return True
+
+        return False
 
     @property
     def base_system_prompt(self) -> str:
@@ -203,10 +238,17 @@ Remember to be thorough, methodical, and document your findings as you work."""
                     system_prompt = self._build_system_prompt(task)
                     prepared_messages = self.context_mgr.prepare_messages(task.messages, system_prompt)
 
-                    # Call LLM with prepared messages and tools
+                    # Determine temperature based on context
+                    if self._expecting_tool_call(task):
+                        temperature = get_temperature("tool_call")
+                    else:
+                        temperature = get_temperature("default")
+
+                    # Call LLM with prepared messages, tools, and temperature
                     llm_response = await self.llm.chat(
                         messages=prepared_messages,
                         tools=all_tools if all_tools else None,
+                        temperature=temperature,
                     )
 
                     # Check if response has tool calls
