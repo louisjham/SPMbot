@@ -9,7 +9,7 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable, Optional
 
 from tasks.models import (
@@ -227,7 +227,7 @@ class TaskManager:
         # Update status
         await self.update_task(task_id, TaskUpdate(
             status=TaskStatus.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         ))
         
         # Create async task
@@ -261,7 +261,7 @@ class TaskManager:
             output="",
         )
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             async with self._semaphore:
@@ -287,13 +287,13 @@ class TaskManager:
         else:
             await self.update_task(task.id, TaskUpdate(
                 status=TaskStatus.COMPLETED,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
             ))
             logger.info(f"Task {task.id} completed successfully")
         
         finally:
-            result.execution_time = (datetime.utcnow() - start_time).total_seconds()
-            result.completed_at = datetime.utcnow()
+            result.execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+            result.completed_at = datetime.now(timezone.utc)
             
             # Save result
             await self.store.save_task_result(result.model_dump())

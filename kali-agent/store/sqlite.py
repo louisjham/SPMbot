@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -234,8 +234,8 @@ class SQLiteStore:
             """, (
                 data["conversation_id"],
                 data["user_id"],
-                data.get("created_at", datetime.utcnow().isoformat()),
-                data.get("updated_at", datetime.utcnow().isoformat()),
+                data.get("created_at", datetime.now(timezone.utc).isoformat()),
+                data.get("updated_at", datetime.now(timezone.utc).isoformat()),
                 json.dumps(data.get("metadata", {})),
             ))
             await self._db.commit()
@@ -320,7 +320,7 @@ class SQLiteStore:
                 data["conversation_id"],
                 data["role"],
                 data["content"],
-                data.get("timestamp", datetime.utcnow().isoformat()),
+                data.get("timestamp", datetime.now(timezone.utc).isoformat()),
                 data.get("tool_call_id"),
                 json.dumps(data.get("metadata", {})),
             ))
@@ -421,7 +421,7 @@ class SQLiteStore:
                 data.get("priority", 5),
                 data.get("timeout", 300),
                 data.get("status", "pending"),
-                data.get("created_at", datetime.utcnow().isoformat()),
+                data.get("created_at", datetime.now(timezone.utc).isoformat()),
                 data.get("started_at"),
                 data.get("completed_at"),
                 1 if data.get("require_confirmation") else 0,
@@ -558,7 +558,7 @@ class SQLiteStore:
                 json.dumps(data.get("data", {})),
                 data.get("error"),
                 data.get("execution_time", 0.0),
-                data.get("completed_at", datetime.utcnow().isoformat()),
+                data.get("completed_at", datetime.now(timezone.utc).isoformat()),
             ))
             await self._db.commit()
     
@@ -635,7 +635,7 @@ class SQLiteStore:
         Returns:
             Number of tasks cleaned up.
         """
-        cutoff = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
         
         async with self._lock:
             cursor = await self._db.execute("""
@@ -673,7 +673,7 @@ class SQLiteStore:
                 json.dumps(data.get("data", {})),
                 data.get("error"),
                 data.get("execution_time", 0.0),
-                data.get("executed_at", datetime.utcnow().isoformat()),
+                data.get("executed_at", datetime.now(timezone.utc).isoformat()),
             ))
             await self._db.commit()
             return cursor.lastrowid
@@ -802,10 +802,31 @@ class AgentStore:
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
             
+            -- Findings table
+            CREATE TABLE IF NOT EXISTS findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                finding_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                target TEXT,
+                source_skill TEXT NOT NULL,
+                source_output TEXT,
+                context TEXT DEFAULT '{}',
+                confidence REAL DEFAULT 1.0,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                UNIQUE(task_id, finding_type, value, target)
+            );
+            
             -- Indexes for faster lookups
             CREATE INDEX IF NOT EXISTS idx_task_messages_task_id ON task_messages(task_id);
             CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON artifacts(task_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+            CREATE INDEX IF NOT EXISTS idx_findings_type ON findings(finding_type);
+            CREATE INDEX IF NOT EXISTS idx_findings_value ON findings(value);
+            CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id);
         """)
         
         await self._db.commit()
@@ -824,7 +845,7 @@ class AgentStore:
         from tasks.models import TaskConfig
         
         config_json = task.config.model_dump_json() if isinstance(task.config, TaskConfig) else json.dumps(task.config)
-        created_at = task.created_at.isoformat() if task.created_at else datetime.utcnow().isoformat()
+        created_at = task.created_at.isoformat() if task.created_at else datetime.now(timezone.utc).isoformat()
         # AgentTask doesn't have completed_at, will be set when task completes
         completed_at = None
         state = task.state.value if hasattr(task.state, 'value') else str(task.state)
@@ -862,7 +883,7 @@ class AgentStore:
             task_id: The ID of the task the message belongs to.
             message: The message dictionary containing role, content, and optional tool_call_id.
         """
-        timestamp = message.get("timestamp") or datetime.utcnow().isoformat()
+        timestamp = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
         
         await self._db.execute(
             """
@@ -1027,7 +1048,7 @@ class AgentStore:
         if not findings:
             return 0
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         saved_count = 0
         
         async with self._lock:
@@ -1152,7 +1173,7 @@ class AgentStore:
         Returns:
             The inserted artifact ID.
         """
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         async with self._lock:
             cursor = await self._db.execute("""

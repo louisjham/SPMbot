@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
 # HTML special characters that need escaping
 HTML_ESCAPE_CHARS = {
-    "&": "&",
-    "<": "<",
-    ">": ">",
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
 }
 
 

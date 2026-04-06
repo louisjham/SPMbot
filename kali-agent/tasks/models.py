@@ -7,7 +7,7 @@ priorities, and result structures.
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -88,7 +88,7 @@ class Task(TaskBase):
         description="Current task status",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Task creation timestamp",
     )
     started_at: Optional[datetime] = Field(
@@ -141,7 +141,7 @@ class TaskResult(BaseModel):
         description="Execution time in seconds",
     )
     completed_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Result creation timestamp",
     )
     
@@ -314,6 +314,6 @@ class AgentTask:
     messages: list[dict] = field(default_factory=list)
     current_iteration: int = 0
     artifacts: list[str] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     error: str | None = None

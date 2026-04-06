@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where python:*)",
+      "Bash(cat \"C:\\\\Users\\\\reson\\\\.claude\\\\projects\\\\c--antigravity-mcpservers\"/*.jsonl)",
+      "Bash(find \"C:\\\\Users\\\\reson\\\\.claude\\\\projects\" -name \"*.json\" -type f -exec grep -l \"hexstrike\" {} \\\\;)",
+      "Bash(find \"C:\\\\Users\\\\reson\\\\.claude\" -name \"*.json\" -type f -path \"*/projects/*\" -exec basename {} \\\\;)",
+      "Bash(cat \"c:\\\\antigravity\\\\SPMbot\\\\kali-agent\\\\.claude\"/*.json)",
+      "Bash(cat \"C:\\\\Users\\\\reson\\\\.claude\\\\projects\\\\c--antigravity-SPMbot-kali-agent\"/*)",
+      "Read(//c/Users/reson/.claude/**)",
+      "WebSearch",
+      "Bash(python3 hexstrike_mcp.py --help)",
+      "Bash(py:*)"
+    ]
+  }
+}

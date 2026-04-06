@@ -1,0 +1,13 @@
+{
+  "hexstrike-ai": {
+    "command": "py",
+    "args": [
+      "C:\\Users\\reson\\hexstrike-ai\\hexstrike_mcp.py",
+      "--server",
+      "http://localhost:8888"
+    ],
+    "description": "HexStrike AI v6.0 - Advanced Cybersecurity Automation Platform",
+    "timeout": 300,
+    "alwaysAllow": []
+  }
+}

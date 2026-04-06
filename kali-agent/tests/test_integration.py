@@ -25,7 +25,7 @@ from skills.registry import SkillRegistry
 from skills.yaml_loader import YAMLSkill, load_yaml_skills
 from agent.llm import LLMClient
 from agent.loop import AgentLoop
-from agent.context_manager import ContextManager, ConversationContext, Message
+from agent.context import ContextManager, ConversationContext, Message
 from agent.conditions import check_stop_conditions
 from bot.formatters import escape_html, split_message
 from tasks.models import AgentTask, TaskConfig, TaskState
@@ -245,7 +245,7 @@ quick_skills:
         yaml_file.write_text(yaml_content)
         
         # Load skills from file
-        count = load_yaml_skills(str(yaml_file), skill_registry)
+        count = load_yaml_skills(skill_registry, str(yaml_file))
         
         assert count == 1
         skill = skill_registry.get("test_scan")
@@ -256,11 +256,11 @@ quick_skills:
         """Test loading skills from the actual config/skills.yaml file."""
         config_path = Path("config/skills.yaml")
         if config_path.exists():
-            count = load_yaml_skills(str(config_path), skill_registry)
+            count = load_yaml_skills(skill_registry, str(config_path))
             assert count > 0, "Should load at least one skill from config"
             
             # Check for known skills in config
-            skill_names = skill_registry.list_skills()
+            skill_names = list(skill_registry)
             assert len(skill_names) > 0
 
 
@@ -312,7 +312,7 @@ class TestOpenAIToolSchema:
             async def execute(self, **kwargs: Any) -> SkillResult:
                 return SkillResult(success=True, output="done")
         
-        skill = EnumSkill(name="enum_skill", description="Skill with enum parameter", parameters=[])  # type: ignore[call-arg]
+        skill = EnumSkill(name="enum_skill", description="Skill with enum parameter", parameters=EnumSkill.parameters)  # type: ignore[call-arg]
         tool = skill.to_openai_tool()
         
         # Check enum is in schema
@@ -345,7 +345,7 @@ class TestOpenAIToolSchema:
             async def execute(self, **kwargs: Any) -> SkillResult:
                 return SkillResult(success=True, output="done")
         
-        skill = OptionalSkill(name="optional_skill", description="Skill with optional params", parameters=[])  # type: ignore[call-arg]
+        skill = OptionalSkill(name="optional_skill", description="Skill with optional params", parameters=OptionalSkill.parameters)  # type: ignore[call-arg]
         tool = skill.to_openai_tool()
         
         required = tool["function"]["parameters"]["required"]
@@ -356,7 +356,7 @@ class TestOpenAIToolSchema:
         """Test that all discovered skills produce valid OpenAI tool schemas."""
         skill_registry.auto_discover("skills")
         
-        for skill_name in skill_registry.list_skills():
+        for skill_name in skill_registry:
             skill = skill_registry.get(skill_name)
             tool = skill.to_openai_tool()
             
@@ -791,7 +791,7 @@ class TestAgentLoop:
     
     @pytest.mark.asyncio
     async def test_agent_loop_handles_dangerous_skill_confirmation(
-        self, mock_llm_client, skill_registry, context_manager, agent_task
+        self, mock_llm_client, skill_registry, context_manager, agent_task, mock_store
     ):
         """Test that dangerous skills require confirmation."""
         # Register a dangerous skill
@@ -807,7 +807,7 @@ class TestAgentLoop:
             async def execute(self, **kwargs: Any) -> SkillResult:
                 return SkillResult(success=True, output="Executed")
         
-        skill_registry.register(DangerousSkill(name="dangerous_scan", description="A dangerous scan", parameters=[]))  # type: ignore[call-arg]
+        skill_registry.register(DangerousSkill(name="dangerous_scan", description="A dangerous scan", parameters=DangerousSkill.parameters, dangerous=True))  # type: ignore[call-arg]
         
         # Create mock tool call
         mock_tool_call = MagicMock()
@@ -836,6 +836,8 @@ class TestAgentLoop:
         )
         
         await agent_loop.run(agent_task)
+        
+        print(f"Messages after run: {agent_task.messages}")
         
         # Verify confirmation was requested
         confirm_callback.assert_called_once()
@@ -1003,25 +1005,25 @@ class TestEscapeHTML:
         """Test escaping ampersand."""
         result = escape_html("Tom & Jerry")
         
-        assert result == "Tom & Jerry"
+        assert result == "Tom &amp; Jerry"
     
     def test_escape_less_than(self):
         """Test escaping less than sign."""
         result = escape_html("age < 30")
         
-        assert result == "age < 30"
+        assert result == "age &lt; 30"
     
     def test_escape_greater_than(self):
         """Test escaping greater than sign."""
         result = escape_html("age > 20")
         
-        assert result == "age > 20"
+        assert result == "age &gt; 20"
     
     def test_escape_all_special_chars(self):
         """Test escaping all special HTML characters."""
         result = escape_html("<script>alert('xss')</script>")
         
-        assert result == "<script>alert('xss')</script>"
+        assert result == "&lt;script&gt;alert('xss')&lt;/script&gt;"
         assert "<" not in result
         assert ">" not in result
         assert "&" not in result.replace("&", "")
@@ -1079,7 +1081,7 @@ quick_skills:
         yaml_file = tmp_path / "custom_skills.yaml"
         yaml_file.write_text(yaml_content)
         
-        yaml_count = load_yaml_skills(str(yaml_file), skill_registry)
+        yaml_count = load_yaml_skills(skill_registry, str(yaml_file))
         
         # Both should be accessible
         assert skill_registry.get("nmap_scan") is not None

@@ -8,7 +8,7 @@ including message history and metadata.
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class Message:
     """A single message in the conversation."""
     role: str
     content: str
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     tool_call_id: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
     
@@ -40,8 +40,8 @@ class ConversationContext:
     conversation_id: str
     user_id: int
     messages: list[Message] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = field(default_factory=dict)
     
     def add_message(
@@ -70,7 +70,7 @@ class ConversationContext:
             metadata=metadata or {},
         )
         self.messages.append(message)
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
         return message
     
     def get_messages(self) -> list[dict[str, Any]]:
@@ -97,7 +97,7 @@ class ConversationContext:
     def clear_messages(self) -> None:
         """Clear all messages from the conversation."""
         self.messages.clear()
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
 
 class ContextManager:

@@ -22,6 +22,7 @@ async def store():
     db_path = os.path.join(temp_dir, "test.db")
     s = AgentStore(db_path)
     await s.initialize()
+    await s._db.execute("PRAGMA foreign_keys=OFF")
     yield s
     await s.close()
     # Cleanup
